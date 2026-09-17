@@ -5,209 +5,884 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Tag Scanner">
+<meta name="apple-mobile-web-app-title" content="E-Waste">
 <meta name="robots" content="noindex,nofollow">
-<title>E-Waste Tag Scanner</title>
+<title>E-Waste Ledger</title>
 <!--
-  Live barcode scanner companion for the E-Waste Ledger (Claude artifact).
-  Why it exists: claude.ai frames artifacts without camera delegation, so getUserMedia returns NotAllowedError
-  there (confirmed 2026-09-17 in both the Claude iOS app and Safari). Served top-level over HTTPS, this page
-  gets the camera. It holds no data server-side: scanned serials stay in this phone's localStorage until
-  copied into the Ledger's "Add many serials at once" box.
-  Requirements: must be served over HTTPS (or localhost) - iOS refuses the camera on plain HTTP.
+  E-Waste Ledger - single-page app: live barcode scanning, device records, drive sanitization log,
+  pickup batches, Excel manifest.
+  - Must be served over HTTPS (iOS refuses the camera otherwise). Hosted top-level because claude.ai
+    frames artifacts without camera delegation (getUserMedia -> NotAllowedError, confirmed 2026-09-17).
+  - Data lives in this browser's localStorage. Optional OneDrive sync (Microsoft Graph, delegated,
+    app-folder scope) is configured per device under Setup; no tenant or client id is stored in this file.
+  - No secrets belong in this file: the repository is public.
 -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&display=swap">
 <style>
-:root{--bg:#0A0C0B;--panel:#151B18;--line:#2F3933;--ink:#F2F5F3;--muted:#9AA59E;--accent:#4FBFA3;--accent-ink:#06231C;--amber:#E5B550;--crit:#EE8A80;
-  --sans:system-ui,-apple-system,"Segoe UI",sans-serif;--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+:root{
+  color-scheme:light dark;
+  --ground:#EEF0EC; --surface:#FFFFFF; --sunk:#E3E7E0; --ink:#18201C; --muted:#5A655E; --line:#CDD4CB;
+  --accent:#0B6B57; --accent-ink:#FFFFFF; --accent-soft:#D8EBE5;
+  --warn:#8F5C00; --warn-soft:#F8E9C4; --ok:#1E6A39; --ok-soft:#DBEEE0;
+  --crit:#A8322A; --crit-soft:#F6DDD9; --info:#2A5788; --info-soft:#DCE7F3;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --cond:"IBM Plex Sans Condensed","IBM Plex Sans","Arial Narrow",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --ground:#111513; --surface:#1A201D; --sunk:#0B0E0D; --ink:#E7ECE8; --muted:#9AA59E; --line:#2F3933;
+    --accent:#4FBFA3; --accent-ink:#06231C; --accent-soft:#173A31;
+    --warn:#E5B550; --warn-soft:#3A2E10; --ok:#6FCB8C; --ok-soft:#15301E;
+    --crit:#EE8A80; --crit-soft:#3B1A17; --info:#8DB7E6; --info-soft:#16283B;
+  }
+}
 *{box-sizing:border-box}
-html,body{height:100%;margin:0}
-body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.4;display:flex;flex-direction:column;
-  padding:env(safe-area-inset-top,0) env(safe-area-inset-right,0) env(safe-area-inset-bottom,0) env(safe-area-inset-left,0)}
 [hidden]{display:none!important}
-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px}
-h1{font-size:1rem;margin:0;letter-spacing:.08em;text-transform:uppercase;font-weight:700}
-.count{font-family:var(--mono);font-size:1.5rem;font-weight:600;color:var(--accent)}
-.count small{font-family:var(--sans);font-size:.7rem;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-left:6px}
-.stage{position:relative;flex:0 0 38vh;min-height:220px;background:#000;overflow:hidden}
-.stage video{width:100%;height:100%;object-fit:cover}
-.reticle{position:absolute;left:5%;right:5%;top:50%;height:42%;transform:translateY(-50%);border:2px solid var(--accent);border-radius:8px;box-shadow:0 0 0 100vmax rgba(0,0,0,.45);pointer-events:none}
-.reticle::after{content:"";position:absolute;left:5%;right:5%;top:50%;height:2px;background:var(--amber)}
-.reticle.hit{border-color:var(--amber);background:rgba(229,181,80,.18)}
-.stage-msg{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:20px;text-align:center;background:#000}
-.stage-msg p{margin:0;color:#C9D1CC;max-width:36ch}
-.last{position:absolute;left:12px;right:12px;bottom:10px;text-align:center;font-family:var(--mono);font-weight:600;font-size:1.05rem;text-shadow:0 1px 4px #000;overflow-wrap:anywhere}
-.last.dup{color:var(--amber)}
-.bar{display:flex;flex-wrap:wrap;gap:8px;padding:10px 16px;border-bottom:1px solid var(--line)}
-.btn{font:inherit;font-weight:600;font-size:.92rem;min-height:44px;padding:0 14px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer;flex:1 1 auto;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
+html,body{margin:0}
+body{background:var(--ground);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.45;-webkit-text-size-adjust:100%;padding-top:env(safe-area-inset-top,0px)}
+.wrap{max-width:860px;margin:0 auto;padding-inline:16px;padding-block:14px 110px;display:flex;flex-direction:column;gap:16px}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums;letter-spacing:.02em}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.mast{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:6px 12px}
+.mast h1{font-family:var(--cond);font-weight:700;font-size:1.5rem;letter-spacing:.01em;margin:0;text-transform:uppercase}
+.conn{font:inherit;font-size:.78rem;font-weight:600;padding:4px 10px;border-radius:99px;border:0;background:var(--sunk);color:var(--muted);white-space:nowrap;cursor:pointer}
+.conn[data-mode="synced"]{background:var(--ok-soft);color:var(--ok)}
+.conn[data-mode="error"],.conn[data-mode="dirty"]{background:var(--warn-soft);color:var(--warn)}
+.tally{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--line);border-radius:6px;background:var(--surface);overflow:hidden}
+.tally div{padding:10px 12px;display:flex;flex-direction:column;gap:2px;border-left:1px solid var(--line)}
+.tally div:first-child{border-left:0}
+.tally b{font-family:var(--mono);font-size:1.35rem;font-weight:600;line-height:1}
+.tally span{font-family:var(--cond);font-size:.74rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.tally .flag b{color:var(--warn)}
+.banner{border:1px solid var(--warn);background:var(--warn-soft);color:var(--ink);padding:10px 12px;border-radius:6px;font-size:.9rem;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin-bottom:8px}
+h2{font-family:var(--cond);font-size:.82rem;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin:0;font-weight:600}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:14px;display:flex;flex-direction:column;gap:14px}
+.stack{display:flex;flex-direction:column;gap:16px}
+.field{display:flex;flex-direction:column;gap:5px;min-width:0}
+.field>label,.legend{font-size:.84rem;font-weight:600}
+.hint{font-size:.8rem;color:var(--muted);margin:0;font-weight:400}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:14px}
+.with-scan{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
+input[type=text],input[type=date],input[type=search],select,textarea{width:100%;font:inherit;font-size:16px;color:var(--ink);background:var(--ground);border:1px solid var(--line);border-radius:5px;padding:11px 10px;min-height:46px}
+input.mono,textarea.mono{font-family:var(--mono);text-transform:uppercase}
+input.keepcase{text-transform:none}
+input[type=date]{-webkit-appearance:none;appearance:none;display:block;min-width:0;max-width:100%;text-align:left}
+input[type=date]::-webkit-date-and-time-value{text-align:left;margin:0}
+textarea{min-height:64px;resize:vertical}
+input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-visible,.btn:focus-visible,.row:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.btn{font:inherit;font-weight:600;font-size:.95rem;min-height:46px;padding:0 14px;border-radius:5px;border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:8px;text-align:center}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
-.btn.danger{color:var(--crit)}
-.btn:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
-.opts{display:flex;flex-wrap:wrap;gap:6px 18px;padding:8px 16px;font-size:.85rem;color:var(--muted)}
-.opts label{display:flex;gap:8px;align-items:center}
-.opts input{width:20px;height:20px;accent-color:var(--accent)}
-.list{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch}
-.item{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;padding:9px 16px;border-bottom:1px solid var(--line)}
-.item .n{font-family:var(--mono);font-size:.8rem;color:var(--muted);min-width:2.5ch;text-align:right}
-.item .v{font-family:var(--mono);font-weight:600;overflow-wrap:anywhere}
-.item .f{display:block;font-family:var(--sans);font-weight:400;font-size:.72rem;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
-.item button{font:inherit;min-width:44px;min-height:40px;border-radius:6px;border:1px solid var(--line);background:transparent;color:var(--muted);cursor:pointer}
-.empty{padding:22px 16px;color:var(--muted);font-size:.92rem;margin:0}
-.toast{position:fixed;left:16px;right:16px;bottom:calc(16px + env(safe-area-inset-bottom,0));margin:0 auto;max-width:480px;background:var(--ink);color:#0A0C0B;padding:12px 14px;border-radius:6px;font-weight:600;font-size:.92rem;text-align:center;z-index:10}
+.btn.scan{background:var(--accent-soft);border-color:var(--accent);color:var(--ink)}
+.btn.danger{color:var(--crit);border-color:var(--crit)}
+.btn.small{min-height:38px;font-size:.85rem;padding:0 11px}
+.btn.big{min-height:54px;font-size:1.02rem;width:100%}
+.btn[disabled]{opacity:.55;cursor:default}
+.btn svg{width:20px;height:20px;flex:none}
+.save-row{display:flex;flex-wrap:wrap;gap:10px}
+.save-row .primary{flex:1 1 200px;min-height:52px;font-size:1.02rem}
+.seg{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:5px;overflow:hidden}
+.seg label{display:flex;align-items:center;justify-content:center;min-height:44px;font-weight:600;font-size:.9rem;cursor:pointer;background:var(--ground);color:var(--muted)}
+.seg input:checked+label{background:var(--ink);color:var(--ground)}
+.check{display:flex;gap:10px;align-items:center;font-size:.9rem}
+.check input{width:22px;height:22px;accent-color:var(--accent);flex:none}
+.san{border-left:3px solid var(--warn);padding-left:12px;display:flex;flex-direction:column;gap:14px}
+.note{font-size:.86rem;padding:9px 11px;border-radius:5px;background:var(--info-soft);color:var(--ink)}
+.note.warn{background:var(--warn-soft)} .note.crit{background:var(--crit-soft)} .note.ok{background:var(--ok-soft)}
+.note .btn{margin-top:8px}
+details.panel{display:block}
+details.panel summary{font-weight:600;cursor:pointer;min-height:30px}
+.dbody{display:flex;flex-direction:column;gap:14px;margin-top:12px}
+.list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:6px;background:var(--surface);overflow:hidden}
+.row{all:unset;box-sizing:border-box;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;padding:11px 12px;border-top:1px solid var(--line);cursor:pointer;width:100%}
+.row:first-child{border-top:0}
+.row .serial{font-family:var(--mono);font-weight:600;font-size:1rem;overflow-wrap:anywhere}
+.row .sub{grid-column:1;font-size:.84rem;color:var(--muted);overflow-wrap:anywhere}
+.row .pill{grid-column:2;grid-row:1;align-self:start}
+.row .bn{grid-column:2;grid-row:2;font-size:.76rem;color:var(--muted);text-align:right}
+.pill{font-family:var(--cond);font-size:.74rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;padding:3px 8px;border-radius:3px;white-space:nowrap;display:inline-block}
+.pill.ok{background:var(--ok-soft);color:var(--ok)} .pill.pending{background:var(--warn-soft);color:var(--warn)}
+.pill.vendor{background:var(--info-soft);color:var(--info)} .pill.none{background:var(--sunk);color:var(--muted)}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{font:inherit;font-size:.85rem;font-weight:600;min-height:38px;padding:0 12px;border-radius:99px;border:1px solid var(--line);background:var(--surface);color:var(--muted);cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--ink);color:var(--ground);border-color:var(--ink)}
+.empty{padding:18px 14px;color:var(--muted);font-size:.9rem;margin:0}
+.batch{padding:14px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:10px}
+.batch:first-child{border-top:0}
+.batch h3{margin:0;font-size:1.05rem;font-weight:600;overflow-wrap:anywhere}
+.batch .meta{font-size:.85rem;color:var(--muted);margin:0;overflow-wrap:anywhere}
+.batch .head{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;justify-content:space-between}
+.batch .acts{display:flex;flex-wrap:wrap;gap:8px}
+.tabs{position:fixed;left:0;right:0;bottom:0;z-index:20;background:var(--surface);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0px)}
+.tabs div{max-width:860px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr)}
+.tab{all:unset;box-sizing:border-box;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;padding:9px 4px 8px;font-family:var(--cond);font-size:.76rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);border-top:3px solid transparent}
+.tab svg{width:22px;height:22px}
+.tab[aria-current="page"]{color:var(--accent);border-top-color:var(--accent)}
+/* scanner: fixed dark look */
+.scanner{position:fixed;inset:0;z-index:50;background:#0A0C0B;color:#F2F5F3;display:flex;flex-direction:column;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+.scan-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px}
+.scan-head strong{font-family:var(--cond);font-size:1.05rem;letter-spacing:.06em;text-transform:uppercase}
+.scan-count{font-family:var(--mono);font-size:1.3rem;font-weight:600;color:#4FBFA3}
+.scan-stage{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#000}
+.scan-stage video{width:100%;height:100%;object-fit:cover}
+.reticle{position:absolute;left:5%;right:5%;top:50%;height:34%;transform:translateY(-50%);border:2px solid #4FBFA3;border-radius:8px;box-shadow:0 0 0 100vmax rgba(0,0,0,.45);pointer-events:none}
+.reticle::after{content:"";position:absolute;left:6%;right:6%;top:50%;height:2px;background:#E5B550;opacity:.9}
+.reticle.hit{border-color:#E5B550;background:rgba(229,181,80,.2)}
+.scan-msg{position:absolute;left:16px;right:16px;bottom:12px;margin:0;text-align:center;font-size:.95rem;color:#F2F5F3;text-shadow:0 1px 3px #000;overflow-wrap:anywhere}
+.scan-msg.big{font-family:var(--mono);font-weight:600;font-size:1.15rem}
+.scan-msg.dup{color:#E5B550}
+.scan-fallback{padding:24px 20px;text-align:center;display:flex;flex-direction:column;gap:14px;align-items:center;max-width:420px}
+.scan-fallback p{margin:0;color:#C9D1CC;font-size:.95rem}
+.scan-fallback .err{font-family:var(--mono);font-size:.76rem;color:#8C9891}
+.scan-fallback .err:empty{display:none}
+.scan-info{padding:10px 16px;font-size:.85rem;color:#C9D1CC;background:#16201C;border-top:1px solid #2F3933}
+.scan-foot{padding:12px 16px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.scanner .btn{background:#1F2925;border-color:#3A4640;color:#F2F5F3}
+.scanner .btn.primary{background:#4FBFA3;border-color:#4FBFA3;color:#06231C}
+.toast{position:fixed;left:16px;right:16px;bottom:calc(86px + env(safe-area-inset-bottom,0px));z-index:60;margin:0 auto;max-width:520px;background:var(--ink);color:var(--ground);padding:12px 14px;border-radius:6px;font-size:.92rem;font-weight:500;box-shadow:0 6px 24px rgba(0,0,0,.25)}
+.toast.err{background:var(--crit);color:#FFFFFF}
+code{font-family:var(--mono);font-size:.85em;overflow-wrap:anywhere}
+ol.steps{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px;font-size:.88rem}
 </style>
 </head>
 <body>
-<header>
-  <h1>Tag Scanner</h1>
-  <span class="count"><span id="count">0</span><small>scanned</small></span>
-</header>
+<div class="wrap">
+  <header class="mast">
+    <h1>E-Waste Ledger</h1>
+    <button type="button" class="conn" id="conn" data-mode="local">On this device</button>
+  </header>
+  <div class="tally" aria-live="polite">
+    <div><b id="t-total">0</b><span id="t-total-l">Devices in batch</span></div>
+    <div><b id="t-data">0</b><span>Data-bearing</span></div>
+    <div id="t-pend-box"><b id="t-pend">0</b><span>Wipe not recorded</span></div>
+  </div>
+  <div id="banners"></div>
 
-<div class="stage">
-  <video id="video" playsinline muted autoplay></video>
-  <div class="reticle" id="reticle"></div>
-  <div class="last" id="last"></div>
-  <div class="stage-msg" id="stageMsg">
-    <p id="stageText">Point the camera at a serial-number barcode. Each new tag beeps and drops into the list – no tapping between devices.</p>
-    <button type="button" class="btn primary" id="startBtn" style="flex:none;min-width:200px">Start camera</button>
+  <!-- RECORD -->
+  <section id="view-add" class="stack">
+    <form class="panel" id="devForm" autocomplete="off" novalidate>
+      <h2 id="formTitle">Record a device</h2>
+      <div id="editBar" class="note" hidden></div>
+      <div class="field">
+        <label for="f-batch">Pickup batch</label>
+        <select id="f-batch"></select>
+        <p class="hint" id="batchHint" hidden>No pickup batches yet. Create one under Batches so each handoff exports as its own manifest.</p>
+      </div>
+      <div class="two">
+        <div class="field"><label for="f-type">Device type</label><select id="f-type"></select></div>
+        <div class="field"><label for="f-mfr">Manufacturer</label><input type="text" id="f-mfr" list="dl-mfr" autocorrect="off" spellcheck="false"></div>
+      </div>
+      <div class="field"><label for="f-model">Model</label><input type="text" id="f-model" list="dl-model" autocorrect="off" spellcheck="false" placeholder="e.g. OptiPlex 7040"></div>
+      <div class="field">
+        <label for="f-code">Model / part-number barcode <span class="hint">(optional)</span></label>
+        <div class="with-scan">
+          <input type="text" id="f-code" class="mono" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="P/N, UPC or model barcode">
+          <button type="button" class="btn scan" data-scan="code" aria-label="Scan model or part number barcode">Scan</button>
+        </div>
+        <p class="hint" id="codeHint">Scan it once and name the model; every later scan of that code fills make, model and type for you.</p>
+      </div>
+      <div class="field">
+        <span class="legend" id="dbLegend">Does it hold data? (drive, flash, saved config)</span>
+        <div class="seg" role="radiogroup" aria-labelledby="dbLegend">
+          <input class="vh" type="radio" name="f-db" id="f-db-y" value="1"><label for="f-db-y">Yes – data-bearing</label>
+          <input class="vh" type="radio" name="f-db" id="f-db-n" value="0"><label for="f-db-n">No storage</label>
+        </div>
+      </div>
+      <div class="san" id="sanBox">
+        <h2>Drive sanitization record</h2>
+        <div class="field"><label for="f-method">Method (NIST SP 800-88)</label><select id="f-method"></select></div>
+        <div class="two">
+          <div class="field"><label for="f-sdate">Date</label><input type="date" id="f-sdate"></div>
+          <div class="field"><label for="f-sby">Performed by</label><input type="text" id="f-sby" autocorrect="off" spellcheck="false"></div>
+        </div>
+        <label class="check" for="f-sver"><input type="checkbox" id="f-sver">Result verified (wipe log checked / destruction witnessed)</label>
+        <div class="field" id="dserialField">
+          <label for="f-dserial">Drive serial number <span class="hint">(this device only – if removed or wiped separately)</span></label>
+          <div class="with-scan">
+            <input type="text" id="f-dserial" class="mono" autocapitalize="characters" autocorrect="off" spellcheck="false">
+            <button type="button" class="btn scan" data-scan="dserial" aria-label="Scan drive serial barcode">Scan</button>
+          </div>
+        </div>
+      </div>
+
+      <button type="button" class="btn primary big" id="rapidBtn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 7V4h3M21 7V4h-3M3 17v3h3M21 17v3h-3M7 8v8M10 8v8M13 8v8M17 8v8"/></svg>
+        Rapid scan – save every tag with these details
+      </button>
+      <p class="hint">Set the details above once, then sweep the camera across a stack of identical devices. Each new serial beeps and is saved straight into the batch.</p>
+
+      <div class="field">
+        <label for="f-serial">Or one device: serial number / service tag</label>
+        <div class="with-scan">
+          <input type="text" id="f-serial" class="mono" autocapitalize="characters" autocorrect="off" spellcheck="false" placeholder="Scan or type">
+          <button type="button" class="btn scan" data-scan="serial" aria-label="Scan one serial number">Scan</button>
+        </div>
+        <div id="dupNote" class="note warn" hidden></div>
+      </div>
+      <div class="field"><label for="f-notes">Notes</label><textarea id="f-notes" placeholder="Condition, asset tag, reason for disposal…"></textarea></div>
+      <label class="check" for="f-keep"><input type="checkbox" id="f-keep" checked>Keep make, model and sanitization details for the next device</label>
+      <div class="save-row">
+        <button type="submit" class="btn primary" id="saveBtn">Save device</button>
+        <button type="button" class="btn" id="cancelEdit" hidden>Cancel</button>
+        <button type="button" class="btn danger" id="delBtn" hidden>Delete</button>
+      </div>
+    </form>
+
+    <details class="panel" id="bulkPanel">
+      <summary>Paste many serials at once</summary>
+      <div class="dbody">
+        <p class="hint">One per line (commas and spaces work too) – from an SCCM export or a Bluetooth scanner. Each becomes a device in the batch chosen above with the details in the form.</p>
+        <div class="field"><label for="bulkBox">Serial numbers</label><textarea id="bulkBox" class="mono" rows="6" autocapitalize="characters" autocorrect="off" spellcheck="false" style="min-height:140px"></textarea></div>
+        <button type="button" class="btn primary" id="bulkBtn">Add these devices</button>
+        <div id="bulkNote" class="note" hidden></div>
+      </div>
+    </details>
+
+    <div class="stack" style="gap:8px">
+      <h2>Just recorded</h2>
+      <div class="list" id="recent"></div>
+    </div>
+  </section>
+
+  <!-- DEVICES -->
+  <section id="view-devices" class="stack" hidden style="gap:12px">
+    <input type="search" id="q" placeholder="Search serial, model, drive serial…" autocorrect="off" spellcheck="false" aria-label="Search devices">
+    <div class="chips" id="filters">
+      <button type="button" class="chip" data-filter="batch" aria-pressed="true">This batch</button>
+      <button type="button" class="chip" data-filter="all" aria-pressed="false">All batches</button>
+      <button type="button" class="chip" data-filter="pending" aria-pressed="false">Wipe not recorded</button>
+    </div>
+    <div class="list" id="devList"></div>
+  </section>
+
+  <!-- BATCHES -->
+  <section id="view-batches" class="stack" hidden>
+    <div class="list" id="batchList"></div>
+    <form class="panel" id="batchForm" autocomplete="off" novalidate>
+      <h2 id="batchFormTitle">New pickup batch</h2>
+      <div class="field"><label for="b-name">Batch name</label><input type="text" id="b-name" placeholder="e.g. NY storage room – Oct 2026"></div>
+      <div class="two">
+        <div class="field"><label for="b-vendor">Recycler / vendor</label><input type="text" id="b-vendor" list="dl-vendor"></div>
+        <div class="field"><label for="b-date">Pickup date</label><input type="date" id="b-date"></div>
+      </div>
+      <div class="two">
+        <div class="field"><label for="b-ref">Manifest / work-order #</label><input type="text" id="b-ref" class="mono"></div>
+        <div class="field"><label for="b-cod">Certificate of destruction #</label><input type="text" id="b-cod" class="mono"></div>
+      </div>
+      <label class="check" for="b-codrx"><input type="checkbox" id="b-codrx">Certificate of destruction received from vendor</label>
+      <label class="check" for="b-picked"><input type="checkbox" id="b-picked">Picked up – batch closed</label>
+      <div class="field"><label for="b-notes">Notes</label><textarea id="b-notes" placeholder="Pallet / box count, driver, location…"></textarea></div>
+      <div class="save-row">
+        <button type="submit" class="btn primary" id="batchSave">Create batch</button>
+        <button type="button" class="btn" id="batchCancel" hidden>Cancel</button>
+        <button type="button" class="btn danger" id="batchDel" hidden>Delete batch</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- SETUP -->
+  <section id="view-setup" class="stack" hidden>
+    <div class="panel">
+      <h2>Manifest</h2>
+      <div class="field"><label for="s-org">Organization name printed on manifests</label><input type="text" id="s-org" placeholder="Your firm's legal name"></div>
+      <button type="button" class="btn" id="exportAll">Export every device (CSV)</button>
+    </div>
+
+    <div class="panel">
+      <h2>Backup file</h2>
+      <p class="hint" id="backupState">Records live in this browser. A backup file is the only copy outside it unless OneDrive sync is on.</p>
+      <div class="save-row">
+        <button type="button" class="btn primary" id="backupBtn">Save a backup file</button>
+        <label class="btn" for="restoreInput" id="restoreBtn" tabindex="0" role="button">Restore / merge from file</label>
+      </div>
+      <p class="hint">On the iPhone the share sheet opens – choose Save to Files → OneDrive. Restoring merges by record, newest edit wins; it never wipes what is here.</p>
+    </div>
+
+    <div class="panel">
+      <h2>OneDrive sync</h2>
+      <div id="syncState" class="note">Not set up. Records stay on this device only.</div>
+      <div class="save-row">
+        <button type="button" class="btn primary" id="signInBtn" hidden>Sign in to Microsoft 365</button>
+        <button type="button" class="btn primary" id="syncBtn" hidden>Sync now</button>
+        <button type="button" class="btn" id="signOutBtn" hidden>Disconnect this device</button>
+      </div>
+      <details>
+        <summary style="cursor:pointer;font-weight:600;font-size:.9rem">One-time setup (Entra app registration)</summary>
+        <div class="dbody">
+          <ol class="steps">
+            <li>Entra admin center → App registrations → New registration. Name it <b>E-Waste Ledger</b> (OneDrive names the folder <code>Apps/E-Waste Ledger</code>). Accounts in this organizational directory only.</li>
+            <li>Platform: <b>Single-page application</b>, redirect URI exactly: <code id="redirShow"></code></li>
+            <li>API permissions → Microsoft Graph → Delegated → <code>Files.ReadWrite.AppFolder</code> (the app can only touch its own folder). No client secret.</li>
+            <li>Paste the Application (client) ID and your tenant domain below on each device, then sign in.</li>
+          </ol>
+          <div class="field"><label for="c-client">Application (client) ID</label><input type="text" id="c-client" class="mono keepcase" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="00000000-0000-0000-0000-000000000000"></div>
+          <div class="field"><label for="c-tenant">Tenant domain or ID</label><input type="text" id="c-tenant" class="keepcase" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="yourfirm.com"></div>
+          <div class="field"><label for="c-scope">Permission</label>
+            <select id="c-scope"><option value="Files.ReadWrite.AppFolder">Files.ReadWrite.AppFolder – app folder only (least privilege)</option><option value="Files.ReadWrite">Files.ReadWrite – fallback if the tenant rejects the app-folder scope</option></select></div>
+          <button type="button" class="btn" id="cfgSave">Save sync settings</button>
+        </div>
+      </details>
+    </div>
+  </section>
+</div>
+
+<nav class="tabs" aria-label="Sections"><div>
+  <button class="tab" data-view="add" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 7V4h3M21 7V4h-3M3 17v3h3M21 17v3h-3M7 8v8M10 8v8M13 8v8M17 8v8"/></svg>Record</button>
+  <button class="tab" data-view="devices"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>Devices</button>
+  <button class="tab" data-view="batches"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8l9-5 9 5v8l-9 5-9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>Batches</button>
+  <button class="tab" data-view="setup"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/><circle cx="12" cy="12" r="3.5"/></svg>Setup</button>
+</div></nav>
+
+<div class="scanner" id="scanner" hidden role="dialog" aria-modal="true" aria-labelledby="scanTitle">
+  <div class="scan-head"><strong id="scanTitle">Scan</strong><span class="scan-count" id="scanCount" hidden>0</span><button type="button" class="btn small" id="scanClose">Done</button></div>
+  <div class="scan-stage">
+    <video id="scanVideo" playsinline muted autoplay></video>
+    <div class="reticle" id="reticle"></div>
+    <p class="scan-msg" id="scanMsg"></p>
+    <div class="scan-fallback" id="scanFallback" hidden>
+      <p id="fallbackMsg"></p>
+      <button type="button" class="btn small" id="retryLive">Try the live camera again</button>
+      <p class="err" id="liveErr"></p>
+    </div>
+  </div>
+  <div class="scan-info" id="scanInfo" hidden></div>
+  <div class="scan-foot">
+    <button type="button" class="btn" id="torchBtn" hidden>Light</button>
+    <label class="btn" for="photoInput" id="photoBtn" tabindex="0" role="button">Photo instead</label>
   </div>
 </div>
-
-<div class="bar">
-  <button type="button" class="btn primary" id="copyBtn">Copy all</button>
-  <button type="button" class="btn" id="shareBtn" hidden>Share</button>
-  <button type="button" class="btn" id="torchBtn" hidden>Light</button>
-  <button type="button" class="btn" id="pauseBtn" hidden>Pause</button>
-  <button type="button" class="btn danger" id="clearBtn">Clear</button>
-</div>
-<div class="opts">
-  <label for="optUpc"><input type="checkbox" id="optUpc" checked>Ignore UPC / EAN product codes</label>
-  <label for="optNum"><input type="checkbox" id="optNum">Ignore all-digit codes (Dell express service code)</label>
-</div>
-
-<div class="list" id="list" aria-live="polite"></div>
-<div class="bar" style="border-top:1px solid var(--line);border-bottom:0">
-  <a class="btn" id="ledgerLink" href="https://claude.ai/artifact/1Tkqrcy4BiG5isPhpBuHaT" target="_blank" rel="noopener">Open the E-Waste Ledger to paste</a>
-</div>
-<p class="toast" id="toast" role="status" hidden></p>
+<input type="file" id="photoInput" class="vh" accept="image/*" capture="environment" tabindex="-1" aria-hidden="true">
+<input type="file" id="restoreInput" class="vh" accept=".json,application/json" tabindex="-1" aria-hidden="true">
+<datalist id="dl-mfr"></datalist><datalist id="dl-model"></datalist><datalist id="dl-vendor"></datalist>
+<p class="toast" id="toast" role="status" aria-live="polite" hidden></p>
 
 <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.38.3/lib/msal-browser.min.js"></script>
 <script>
 (() => {
 'use strict';
-const KEY = 'ewaste-tagscanner-v1';
+
+/* ---------- reference data ---------- */
+const TYPES = [['Desktop', true], ['Laptop', true], ['Server', true], ['Monitor', false], ['Printer / MFP', true], ['Switch / router / firewall', true], ['Wireless AP', true],
+  ['Desk phone', true], ['Mobile phone / tablet', true], ['Loose hard drive / SSD', true], ['Docking station', false], ['UPS / battery', false], ['Peripheral / cable / misc', false], ['Other', false]];
+const METHODS = [['', 'Not recorded yet'], ['clear', 'Clear – software overwrite / wipe'], ['purge', 'Purge – secure erase / crypto erase'], ['destroy', 'Destroy – shredded / degaussed in-house'],
+  ['vendor', 'Vendor to destroy – drive ships in device'], ['retained', 'Drive removed and retained by IT']];
+const METHOD_LABEL = Object.fromEntries(METHODS);
+const MFRS = ['Dell', 'HP', 'Lenovo', 'Apple', 'Microsoft', 'Cisco', 'Meraki', 'Palo Alto Networks', 'Fortinet', 'APC', 'Brother', 'Canon', 'Ricoh', 'Xerox', 'Samsung', 'LG', 'Logitech', 'Jabra', 'Poly', 'Yealink', 'Western Digital', 'Seagate', 'Netgear', 'Ubiquiti'];
+const DATA_KEY = 'ewaste-ledger-data-v1', CFG_KEY = 'ewaste-ledger-sync-cfg', META_KEY = 'ewaste-ledger-meta';
+const REMOTE_FILE = 'ewaste-ledger.json';
+
+/* ---------- helpers ---------- */
 const $ = id => document.getElementById(id);
-const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const norm = s => String(s || '').toUpperCase().replace(/\s+/g, '').trim();
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
-const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* storage blocked */ } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); return true; } catch (e) { return false; } };
+const jget = (k, d) => { try { const v = JSON.parse(lsGet(k) || 'null'); return v == null ? d : v; } catch (e) { return d; } };
+const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+const normSerial = s => String(s || '').toUpperCase().replace(/\s+/g, '').trim();
+const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+let toastTimer = 0;
+function toast(msg, isErr) { const t = $('toast'); t.textContent = msg; t.classList.toggle('err', !!isErr); t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, isErr ? 6000 : 3000); }
 
-let items = []; try { items = JSON.parse(lsGet(KEY) || '[]') || []; } catch (e) { items = []; }
-let stream = null, timer = 0, reader = null, lastRead = '', lastAdded = '', lastAddedAt = 0, paused = false, actx = null, toastTimer = 0, clearArmed = 0;
-const work = document.createElement('canvas');
+/* ---------- data: records carry updatedAt; deletes are tombstones so sync and restore can merge ---------- */
+let D = jget(DATA_KEY, null) || { devices: [], batches: [], catalog: {}, settings: { orgName: '', updatedAt: 0 } };
+D.devices = D.devices || []; D.batches = D.batches || []; D.catalog = D.catalog || {}; D.settings = D.settings || { orgName: '', updatedAt: 0 };
+let META = jget(META_KEY, { lastBackup: 0, lastChange: 0, lastSync: 0 });
+const S = { view: 'add', editId: null, batchEditId: null, batchId: lsGet('ewl-batch') || '', filter: 'batch', q: '' };
+const live = arr => arr.filter(x => !x.deleted);
+const devices = () => live(D.devices), batches = () => live(D.batches);
 
-function toast(msg) { const t = $('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 2600); }
-function persist() { lsSet(KEY, JSON.stringify(items)); }
-function render() {
-  $('count').textContent = items.length;
-  $('list').innerHTML = items.length
-    ? items.map((it, i) => '<div class="item"><span class="n">' + (items.length - i) + '</span><span class="v">' + esc(it.v) + '<span class="f">' + esc(it.f) + '</span></span><button type="button" data-del="' + i + '" aria-label="Remove ' + esc(it.v) + '">✕</button></div>').join('')
-    : '<p class="empty">Nothing scanned yet. When you are done, tap Copy all, open the Ledger, and paste into "Add many serials at once".</p>';
+function persist(fromMerge) {
+  if (!lsSet(DATA_KEY, JSON.stringify(D))) toast('This browser refused to store the data (storage full or blocked). Save a backup file now.', true);
+  if (!fromMerge) { META.lastChange = Date.now(); lsSet(META_KEY, JSON.stringify(META)); scheduleSync(); }
+  renderAll();
 }
-function beep(freq) {
+function put(coll, rec) { rec.updatedAt = Date.now(); const a = D[coll]; const i = a.findIndex(x => x.id === rec.id); if (i >= 0) a[i] = rec; else a.push(rec); }
+function tomb(coll, id) { const a = D[coll]; const i = a.findIndex(x => x.id === id); if (i >= 0) a[i] = { id, deleted: true, updatedAt: Date.now() }; }
+function mergeIn(other) {
+  if (!other || typeof other !== 'object') return 0; let n = 0;
+  ['devices', 'batches'].forEach(c => (Array.isArray(other[c]) ? other[c] : []).forEach(r => {
+    if (!r || !r.id) return; const i = D[c].findIndex(x => x.id === r.id);
+    if (i < 0) { D[c].push(r); n++; } else if ((r.updatedAt || 0) > (D[c][i].updatedAt || 0)) { D[c][i] = r; n++; }
+  }));
+  Object.entries(other.catalog || {}).forEach(([k, v]) => { if (!D.catalog[k] || (v.updatedAt || 0) > (D.catalog[k].updatedAt || 0)) { D.catalog[k] = v; n++; } });
+  if (other.settings && (other.settings.updatedAt || 0) > (D.settings.updatedAt || 0)) { D.settings = other.settings; n++; }
+  return n;
+}
+
+function sanState(d) {
+  if (!d.dataBearing) return ['none', 'No storage'];
+  if (!d.sanMethod) return ['pending', 'Wipe not recorded'];
+  if (d.sanMethod === 'vendor') return ['vendor', 'Vendor destroys'];
+  if (d.sanMethod === 'retained') return ['ok', 'Drive retained'];
+  return ['ok', 'Sanitized'];
+}
+const batchName = id => { const b = batches().find(x => x.id === id); return b ? b.name : (id ? 'Deleted batch' : 'Unassigned'); };
+const byNewest = (a, b) => (b.createdAt || 0) - (a.createdAt || 0);
+
+/* ---------- rendering ---------- */
+function renderBanners() {
+  const out = [];
+  const unsaved = META.lastChange > Math.max(META.lastBackup || 0, META.lastSync || 0);
+  if (devices().length && unsaved && !syncReady()) out.push('<div class="banner"><span><b>Changes exist only on this device.</b> Save a backup file (or set up OneDrive sync) so a lost phone doesn\'t lose the record.</span><button type="button" class="btn small" data-go-backup="1">Back up now</button></div>');
+  $('banners').innerHTML = out.join('');
+}
+function renderTally() {
+  const list = S.batchId ? devices().filter(d => d.batchId === S.batchId) : devices();
+  $('t-total-l').textContent = S.batchId ? 'Devices in batch' : 'Devices, all batches';
+  $('t-total').textContent = list.length; $('t-data').textContent = list.filter(d => d.dataBearing).length;
+  const p = list.filter(d => sanState(d)[0] === 'pending').length; $('t-pend').textContent = p; $('t-pend-box').classList.toggle('flag', p > 0);
+}
+function renderBatchSelect() {
+  const sel = $('f-batch'); const want = S.editId ? sel.value : S.batchId;
+  const open = batches().filter(b => !b.pickedUp).sort(byNewest), closed = batches().filter(b => b.pickedUp);
+  let h = '<option value="">Unassigned</option>' + open.map(b => '<option value="' + esc(b.id) + '">' + esc(b.name) + '</option>').join('');
+  if (closed.length) h += '<optgroup label="Picked up">' + closed.map(b => '<option value="' + esc(b.id) + '">' + esc(b.name) + '</option>').join('') + '</optgroup>';
+  sel.innerHTML = h; sel.value = [...sel.options].some(o => o.value === want) ? want : '';
+  $('batchHint').hidden = batches().length > 0;
+}
+function rowHtml(d) {
+  const st = sanState(d); const sub = [[d.manufacturer, d.model].filter(Boolean).join(' '), d.type].filter(Boolean).join(' · ') || 'No make / model recorded';
+  return '<button class="row" type="button" data-edit="' + esc(d.id) + '"><span class="serial">' + esc(d.serial) + '</span><span class="pill ' + st[0] + '">' + esc(st[1]) + '</span><span class="sub">' + esc(sub) + '</span><span class="bn">' + esc(batchName(d.batchId)) + '</span></button>';
+}
+function renderRecent() {
+  const list = devices().filter(d => !S.batchId || d.batchId === S.batchId).sort(byNewest).slice(0, 5);
+  $('recent').innerHTML = list.length ? list.map(rowHtml).join('') : '<p class="empty">Nothing recorded in this batch yet. Set the details above, then tap Rapid scan.</p>';
+}
+function renderDevices() {
+  document.querySelectorAll('#filters .chip').forEach(c => c.setAttribute('aria-pressed', String(c.dataset.filter === S.filter)));
+  const q = S.q.trim().toUpperCase(); let list = devices().sort(byNewest);
+  if (S.filter === 'batch' && S.batchId) list = list.filter(d => d.batchId === S.batchId);
+  if (S.filter === 'pending') list = list.filter(d => sanState(d)[0] === 'pending');
+  if (q) list = list.filter(d => [d.serial, d.manufacturer, d.model, d.driveSerial, d.modelCode, d.notes].some(v => String(v || '').toUpperCase().includes(q)));
+  $('devList').innerHTML = list.length ? list.map(rowHtml).join('') : '<p class="empty">' + (devices().length ? 'No devices match.' : 'No devices recorded yet.') + '</p>';
+}
+function renderBatches() {
+  const list = batches().sort(byNewest);
+  if (!list.length) { $('batchList').innerHTML = '<p class="empty">No pickup batches yet. Create one below – for example one per site or per recycler visit – then record devices into it.</p>'; return; }
+  $('batchList').innerHTML = list.map(b => {
+    const devs = devices().filter(d => d.batchId === b.id), pend = devs.filter(d => sanState(d)[0] === 'pending').length;
+    const meta = [b.vendor, b.pickupDate && ('Pickup ' + b.pickupDate), b.manifestNo && ('Ref ' + b.manifestNo)].filter(Boolean).join(' · ');
+    return '<div class="batch"><div class="head"><h3>' + esc(b.name) + '</h3><span class="pill ' + (b.pickedUp ? 'none' : 'ok') + '">' + (b.pickedUp ? 'Picked up' : 'Open') + '</span></div>' +
+      (meta ? '<p class="meta">' + esc(meta) + '</p>' : '') +
+      '<p class="meta"><span class="mono">' + devs.length + '</span> device' + (devs.length === 1 ? '' : 's') + ' · <span class="mono">' + devs.filter(d => d.dataBearing).length + '</span> data-bearing · certificate of destruction ' + (b.codReceived ? 'received' + (b.codNumber ? ' (' + esc(b.codNumber) + ')' : '') : 'not received') + '</p>' +
+      (pend ? '<div class="note warn"><b>' + pend + ' data-bearing device' + (pend === 1 ? ' has' : 's have') + ' no sanitization record.</b> The manifest will mark ' + (pend === 1 ? 'it' : 'them') + ' NOT RECORDED.</div>' : '') +
+      '<div class="acts"><button type="button" class="btn small primary" data-xlsx="' + esc(b.id) + '"' + (devs.length ? '' : ' disabled') + '>Excel manifest</button>' +
+      '<button type="button" class="btn small" data-csv="' + esc(b.id) + '"' + (devs.length ? '' : ' disabled') + '>CSV</button>' +
+      '<button type="button" class="btn small" data-bedit="' + esc(b.id) + '">Edit</button>' +
+      '<button type="button" class="btn small" data-buse="' + esc(b.id) + '">Record into this batch</button></div></div>';
+  }).join('');
+}
+function renderDatalists() {
+  const mf = new Set(MFRS), md = new Set(), vn = new Set();
+  devices().forEach(d => { if (d.manufacturer) mf.add(d.manufacturer); if (d.model) md.add(d.model); });
+  Object.values(D.catalog).forEach(c => { if (c.manufacturer) mf.add(c.manufacturer); if (c.model) md.add(c.model); });
+  batches().forEach(b => { if (b.vendor) vn.add(b.vendor); });
+  const opts = set => [...set].sort().map(v => '<option value="' + esc(v) + '"></option>').join('');
+  $('dl-mfr').innerHTML = opts(mf); $('dl-model').innerHTML = opts(md); $('dl-vendor').innerHTML = opts(vn);
+}
+function renderSetup() {
+  if (document.activeElement !== $('s-org')) $('s-org').value = D.settings.orgName || '';
+  $('backupState').textContent = META.lastBackup ? 'Last backup file: ' + new Date(META.lastBackup).toLocaleString() + (META.lastChange > META.lastBackup ? ' – there are newer changes.' : ' – up to date.') : 'No backup file saved yet. Records live in this browser; a backup file is the only copy outside it unless OneDrive sync is on.';
+  renderSync();
+}
+function renderAll() { renderBanners(); renderBatchSelect(); renderTally(); renderRecent(); renderDevices(); renderBatches(); renderDatalists(); renderSetup(); }
+function showView(v) {
+  S.view = v; ['add', 'devices', 'batches', 'setup'].forEach(n => { $('view-' + n).hidden = n !== v; });
+  document.querySelectorAll('.tab').forEach(t => { if (t.dataset.view === v) t.setAttribute('aria-current', 'page'); else t.removeAttribute('aria-current'); });
+  window.scrollTo(0, 0);
+}
+
+/* ---------- device form ---------- */
+function setDataBearing(v) { $('f-db-y').checked = !!v; $('f-db-n').checked = !v; $('sanBox').hidden = !v; }
+function fillForm(d) {
+  $('f-serial').value = d.serial || ''; $('f-code').value = d.modelCode || ''; $('f-type').value = d.type || TYPES[0][0];
+  $('f-mfr').value = d.manufacturer || ''; $('f-model').value = d.model || ''; setDataBearing(d.dataBearing);
+  $('f-dserial').value = d.driveSerial || ''; $('f-method').value = d.sanMethod || ''; $('f-sdate').value = d.sanDate || '';
+  $('f-sby').value = d.sanBy || ''; $('f-sver').checked = !!d.sanVerified; $('f-notes').value = d.notes || '';
+}
+function readForm() {
+  const db = $('f-db-y').checked;
+  return { serial: normSerial($('f-serial').value), modelCode: normSerial($('f-code').value), type: $('f-type').value, manufacturer: $('f-mfr').value.trim(), model: $('f-model').value.trim(), dataBearing: db,
+    driveSerial: db ? normSerial($('f-dserial').value) : '', sanMethod: db ? $('f-method').value : '', sanDate: db && $('f-method').value ? ($('f-sdate').value || today()) : '',
+    sanBy: db ? $('f-sby').value.trim() : '', sanVerified: db && $('f-sver').checked, notes: $('f-notes').value.trim(), batchId: $('f-batch').value };
+}
+let dupOk = '';
+function resetForm(keep) {
+  const p = readForm();
+  fillForm(keep ? { type: p.type, manufacturer: p.manufacturer, model: p.model, modelCode: p.modelCode, dataBearing: p.dataBearing, sanMethod: p.sanMethod, sanDate: p.sanDate, sanBy: p.sanBy, sanVerified: p.sanVerified }
+    : { type: TYPES[0][0], dataBearing: true, sanBy: lsGet('ewl-by') || '', sanDate: today() });
+  $('dupNote').hidden = true; dupOk = '';
+}
+let delArmed = 0;
+function resetDelBtn() { clearTimeout(delArmed); delArmed = 0; $('delBtn').textContent = 'Delete'; }
+function startEdit(id) {
+  const d = devices().find(x => x.id === id); if (!d) return;
+  S.editId = id; fillForm(d); renderBatchSelect(); $('f-batch').value = d.batchId || '';
+  $('formTitle').textContent = 'Edit device'; $('editBar').hidden = false; $('editBar').innerHTML = 'Editing <b class="mono">' + esc(d.serial) + '</b>';
+  $('cancelEdit').hidden = false; $('delBtn').hidden = false; $('rapidBtn').hidden = true; resetDelBtn(); $('dupNote').hidden = true; $('saveBtn').textContent = 'Save changes'; showView('add');
+}
+function endEdit() {
+  S.editId = null; $('formTitle').textContent = 'Record a device'; $('editBar').hidden = true; $('cancelEdit').hidden = true; $('delBtn').hidden = true; $('rapidBtn').hidden = false;
+  resetDelBtn(); $('saveBtn').textContent = 'Save device'; renderBatchSelect(); resetForm(false);
+}
+const catKey = code => normSerial(code);
+function lookupCode(announce) {
+  const k = catKey($('f-code').value), hit = k && D.catalog[k];
+  if (hit) {
+    if (hit.manufacturer) $('f-mfr').value = hit.manufacturer; if (hit.model) $('f-model').value = hit.model;
+    if (hit.type) { $('f-type').value = hit.type; onTypeChange(); }
+    const nm = [hit.manufacturer, hit.model].filter(Boolean).join(' '); $('codeHint').textContent = 'Recognised: ' + nm + '.'; if (announce) toast('Recognised ' + nm);
+  } else if (k) $('codeHint').textContent = 'New code. Fill in make and model once – the ledger remembers it from then on.';
+  return !!hit;
+}
+function onTypeChange() { const t = TYPES.find(x => x[0] === $('f-type').value); if (t) setDataBearing(t[1]); }
+function learnCode(d) {
+  const k = catKey(d.modelCode); if (!k || !(d.manufacturer || d.model)) return;
+  const c = D.catalog[k]; if (!c || c.manufacturer !== d.manufacturer || c.model !== d.model || c.type !== d.type) D.catalog[k] = { manufacturer: d.manufacturer, model: d.model, type: d.type, updatedAt: Date.now() };
+}
+/* Lenovo labels encode 1S + machine-type-model (10) + serial (8) in one barcode */
+function splitSerial(raw, base) {
+  const t = normSerial(raw), len = /^1S([A-Z0-9]{10})([A-Z0-9]{8})$/.exec(t);
+  return len ? { serial: len[2], modelCode: len[1], manufacturer: base.manufacturer || 'Lenovo' } : { serial: t, modelCode: base.modelCode, manufacturer: base.manufacturer };
+}
+const findDup = (serial, exceptId) => devices().find(x => normSerial(x.serial) === serial && x.id !== exceptId);
+
+function saveDevice() {
+  const d = readForm();
+  if (!d.serial) { toast('Scan or type a serial number first.', true); $('f-serial').focus(); return; }
+  const dup = findDup(d.serial, S.editId);
+  if (dup && dupOk !== d.serial) {
+    $('dupNote').hidden = false;
+    $('dupNote').innerHTML = '<b class="mono">' + esc(d.serial) + '</b> is already recorded in <b>' + esc(batchName(dup.batchId)) + '</b>.<br><button type="button" class="btn small" id="dupSave">Save a second entry anyway</button>';
+    return;
+  }
+  if (S.editId) { const old = devices().find(x => x.id === S.editId) || {}; put('devices', { ...old, ...d, id: S.editId }); }
+  else put('devices', { ...d, id: newId(), createdAt: Date.now() });
+  learnCode(d); if (d.sanBy) lsSet('ewl-by', d.sanBy);
+  const wasEdit = !!S.editId; toast((wasEdit ? 'Updated ' : 'Saved ') + d.serial);
+  if (wasEdit) endEdit(); else resetForm($('f-keep').checked);
+  persist(); if (!wasEdit) window.scrollTo(0, 0);
+}
+/* used by rapid scan and paste: returns 'added' | 'dup' */
+function addFromBase(raw, base, order) {
+  const s = splitSerial(raw, base); if (!s.serial) return 'skip';
+  if (findDup(s.serial)) return 'dup';
+  put('devices', { ...base, ...s, driveSerial: '', notes: base.notes || '', id: newId(), createdAt: Date.now() + (order || 0) });
+  return 'added';
+}
+function bulkAdd() {
+  const tokens = $('bulkBox').value.split(/[\s,;]+/).map(normSerial).filter(Boolean);
+  if (!tokens.length) { toast('Paste at least one serial number.', true); return; }
+  const base = readForm(); let added = 0; const skipped = [];
+  tokens.forEach((t, i) => { const r = addFromBase(t, base, i); if (r === 'added') added++; else if (r === 'dup') skipped.push(t); });
+  learnCode(base); persist(); $('bulkBox').value = '';
+  const n = $('bulkNote'); n.hidden = false; n.className = 'note ok';
+  n.textContent = 'Added ' + added + ' device' + (added === 1 ? '' : 's') + (skipped.length ? '. Skipped ' + skipped.length + ' already recorded or repeated: ' + skipped.join(', ') : '.');
+}
+
+/* ---------- batches ---------- */
+function fillBatchForm(b) {
+  $('b-name').value = b.name || ''; $('b-vendor').value = b.vendor || ''; $('b-date').value = b.pickupDate || ''; $('b-ref').value = b.manifestNo || '';
+  $('b-cod').value = b.codNumber || ''; $('b-codrx').checked = !!b.codReceived; $('b-picked').checked = !!b.pickedUp; $('b-notes').value = b.notes || '';
+}
+function endBatchEdit() { S.batchEditId = null; fillBatchForm({}); $('batchFormTitle').textContent = 'New pickup batch'; $('batchCancel').hidden = true; $('batchDel').hidden = true; $('batchDel').textContent = 'Delete batch'; $('batchSave').textContent = 'Create batch'; }
+function useBatch(id) { S.batchId = id; lsSet('ewl-batch', id); if (!S.editId) { renderBatchSelect(); $('f-batch').value = id; } renderTally(); renderRecent(); renderDevices(); }
+function saveBatch() {
+  const b = { name: $('b-name').value.trim(), vendor: $('b-vendor').value.trim(), pickupDate: $('b-date').value, manifestNo: $('b-ref').value.trim(), codNumber: $('b-cod').value.trim(), codReceived: $('b-codrx').checked, pickedUp: $('b-picked').checked, notes: $('b-notes').value.trim() };
+  if (!b.name) { toast('Give the batch a name.', true); $('b-name').focus(); return; }
+  if (S.batchEditId) { const old = batches().find(x => x.id === S.batchEditId) || {}; put('batches', { ...old, ...b, id: S.batchEditId }); toast('Batch updated'); }
+  else { const id = newId(); put('batches', { ...b, id, createdAt: Date.now() }); S.batchId = id; lsSet('ewl-batch', id); toast('Batch created – new devices go into it'); }
+  endBatchEdit(); persist();
+}
+
+/* ---------- files out ---------- */
+const MIME = { xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', csv: 'text/csv', json: 'application/json' };
+async function saveFile(filename, data) {
+  const type = MIME[filename.split('.').pop()] || 'application/octet-stream';
+  const file = new File([data], filename, { type });
+  try { if (navigator.canShare && navigator.canShare({ files: [file] }) && /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) { await navigator.share({ files: [file] }); return true; } }
+  catch (e) { if (e && e.name === 'AbortError') return false; /* otherwise fall through to a plain download */ }
+  const url = URL.createObjectURL(file), a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 4000);
+  return true;
+}
+const COLS = ['#', 'Device type', 'Manufacturer', 'Model', 'Serial number', 'Data-bearing', 'Drive serial', 'Sanitization method', 'Sanitization date', 'Performed by', 'Verified', 'Notes'];
+function devRow(d, i) {
+  return [i + 1, d.type || '', d.manufacturer || '', d.model || '', d.serial || '', d.dataBearing ? 'Yes' : 'No', d.driveSerial || '',
+    d.dataBearing ? (d.sanMethod ? METHOD_LABEL[d.sanMethod] : 'NOT RECORDED') : 'N/A – no storage', d.sanDate || '', d.sanBy || '', d.dataBearing && d.sanMethod ? (d.sanVerified ? 'Yes' : 'No') : '', d.notes || ''];
+}
+const fileSafe = s => String(s || 'batch').replace(/[^A-Za-z0-9 _-]+/g, '').trim().replace(/\s+/g, '_').slice(0, 60) || 'batch';
+const batchDevices = id => devices().filter(d => d.batchId === id).sort((a, b) => (a.type || '').localeCompare(b.type || '') || (a.createdAt || 0) - (b.createdAt || 0));
+async function exportXlsx(id) {
+  const b = batches().find(x => x.id === id); if (!b) return;
+  if (!window.XLSX) { toast("The Excel library didn't load – check the connection and reload, or use CSV.", true); return; }
+  const devs = batchDevices(id);
+  const head = [['ELECTRONIC WASTE MANIFEST'], ['Generator', D.settings.orgName || ''], ['Pickup batch', b.name], ['Recycler / vendor', b.vendor || ''], ['Pickup date', b.pickupDate || ''], ['Manifest / work-order #', b.manifestNo || ''],
+    ['Certificate of destruction #', b.codNumber || ''], ['Total devices', devs.length], ['Data-bearing devices', devs.filter(d => d.dataBearing).length], ['Notes', b.notes || ''], []];
+  const foot = [[], ['CHAIN OF CUSTODY'], ['Released by (print name)', '', '', 'Signature', '', '', 'Date'], [], ['Received by (print name)', '', '', 'Signature', '', '', 'Date'], [],
+    ['Recycler: return a certificate of destruction listing the serial numbers above for every data-bearing device.']];
+  const ws = XLSX.utils.aoa_to_sheet([...head, COLS, ...devs.map(devRow), ...foot]);
+  ws['!cols'] = [{ wch: 26 }, { wch: 28 }, { wch: 18 }, { wch: 26 }, { wch: 22 }, { wch: 13 }, { wch: 22 }, { wch: 38 }, { wch: 16 }, { wch: 18 }, { wch: 9 }, { wch: 40 }];
+  const count = key => { const m = new Map(); devs.forEach(d => { const k = key(d); m.set(k, (m.get(k) || 0) + 1); }); return [...m.entries()].sort((a, c) => c[1] - a[1]); };
+  const sum = [['SUMMARY', b.name], [], ['Device type', 'Count', 'Data-bearing']];
+  count(d => d.type || 'Unspecified').forEach(([t, n]) => sum.push([t, n, devs.filter(d => (d.type || 'Unspecified') === t && d.dataBearing).length]));
+  sum.push(['Total', devs.length, devs.filter(d => d.dataBearing).length], [], ['Sanitization', 'Count']);
+  count(d => devRow(d, 0)[7]).forEach(([t, n]) => sum.push([t, n]));
+  const ws2 = XLSX.utils.aoa_to_sheet(sum); ws2['!cols'] = [{ wch: 42 }, { wch: 10 }, { wch: 14 }];
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Manifest'); XLSX.utils.book_append_sheet(wb, ws2, 'Summary');
+  const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }), name = 'EWaste_Manifest_' + fileSafe(b.name) + '.xlsx';
+  if (syncReady()) uploadRemote('Manifests/' + name, buf, MIME.xlsx).then(ok => { if (ok) toast('Manifest also saved to OneDrive → Apps → Manifests'); });
+  await saveFile(name, buf);
+}
+function csvCell(v) { let s = String(v == null ? '' : v); if (/^[=+\-@]/.test(s)) s = "'" + s; return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
+function exportCsv(id) {
+  const all = id == null;
+  const devs = all ? devices().sort((a, b) => batchName(a.batchId).localeCompare(batchName(b.batchId)) || (a.createdAt || 0) - (b.createdAt || 0)) : batchDevices(id);
+  if (!devs.length) { toast('Nothing to export yet.', true); return; }
+  const rows = [[...COLS, 'Pickup batch', 'Recycler / vendor', 'Pickup date']];
+  devs.forEach((d, i) => { const b = batches().find(x => x.id === d.batchId) || {}; rows.push([...devRow(d, i), b.name || 'Unassigned', b.vendor || '', b.pickupDate || '']); });
+  saveFile('EWaste_' + (all ? 'All_Devices' : fileSafe(batchName(id))) + '.csv', '﻿' + rows.map(r => r.map(csvCell).join(',')).join('\r\n'));
+}
+async function backupNow() {
+  const ok = await saveFile('EWaste_Ledger_Backup_' + today() + '.json', JSON.stringify({ app: 'ewaste-ledger', version: 1, exportedAt: new Date().toISOString(), ...D }, null, 1));
+  if (ok) { META.lastBackup = Date.now(); lsSet(META_KEY, JSON.stringify(META)); renderAll(); }
+}
+function restoreFrom(file) {
+  if (!file) return; const fr = new FileReader();
+  fr.onerror = () => toast("Couldn't read that file.", true);
+  fr.onload = () => { try { const o = JSON.parse(fr.result); if (!o || o.app !== 'ewaste-ledger') throw new Error('not a ledger backup'); const n = mergeIn(o); persist(); toast(n ? 'Merged ' + n + ' newer record' + (n === 1 ? '' : 's') + ' from the backup' : 'Nothing newer in that backup'); } catch (e) { toast("That isn't an E-Waste Ledger backup file.", true); } };
+  fr.readAsText(file);
+}
+
+/* ---------- OneDrive sync (Microsoft Graph, delegated, redirect flow - popups break in Home Screen apps) ---------- */
+const GRAPH = 'https://graph.microsoft.com/v1.0/me/drive/special/approot';
+let CFG = jget(CFG_KEY, { clientId: '', tenant: '', scope: 'Files.ReadWrite.AppFolder' });
+let msalApp = null, account = null, syncTimer = 0, syncing = false, syncErr = '';
+const redirectUri = () => location.origin + location.pathname.replace(/index\.html$/i, '');
+const syncReady = () => !!(msalApp && account);
+async function initMsal() {
+  msalApp = null; account = null;
+  if (!CFG.clientId || !window.msal) return;
   try {
-    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
-    const o = actx.createOscillator(), g = actx.createGain(); o.frequency.value = freq; g.gain.value = 0.08;
-    o.connect(g); g.connect(actx.destination); o.start(); o.stop(actx.currentTime + 0.09);
-  } catch (e) { /* no audio */ }
+    msalApp = new msal.PublicClientApplication({ auth: { clientId: CFG.clientId, authority: 'https://login.microsoftonline.com/' + (CFG.tenant || 'organizations'), redirectUri: redirectUri() }, cache: { cacheLocation: 'localStorage' } });
+    const r = await msalApp.handleRedirectPromise(); if (r && r.account) account = r.account;
+    if (!account) { const a = msalApp.getAllAccounts(); if (a.length) account = a[0]; }
+  } catch (e) { syncErr = 'Sign-in failed: ' + ((e && (e.errorCode || e.message)) || 'unknown'); }
 }
+async function getToken(interactive) {
+  if (!syncReady()) return null;
+  try { return (await msalApp.acquireTokenSilent({ scopes: [CFG.scope], account })).accessToken; }
+  catch (e) { if (interactive) { await msalApp.acquireTokenRedirect({ scopes: [CFG.scope], account }); } else syncErr = 'Sign-in expired – open Setup and tap Sync now.'; return null; }
+}
+async function uploadRemote(path, body, type) {
+  try { const t = await getToken(false); if (!t) return false; const r = await fetch(GRAPH + ':/' + path.split('/').map(encodeURIComponent).join('/') + ':/content', { method: 'PUT', headers: { Authorization: 'Bearer ' + t, 'Content-Type': type }, body }); return r.ok; }
+  catch (e) { return false; }
+}
+async function syncNow(interactive) {
+  if (syncing || !syncReady()) return; syncing = true; renderSync();
+  try {
+    const t = await getToken(interactive); if (!t) return;
+    const meta = await fetch(GRAPH + ':/' + REMOTE_FILE + '?select=id,@microsoft.graph.downloadUrl', { headers: { Authorization: 'Bearer ' + t } });
+    if (meta.ok) { const j = await meta.json(), url = j['@microsoft.graph.downloadUrl']; if (url) { const rr = await fetch(url); if (rr.ok) { mergeIn(await rr.json()); } } }
+    else if (meta.status !== 404) throw new Error('OneDrive answered ' + meta.status + (meta.status === 403 ? ' – permission not granted; try the Files.ReadWrite fallback in setup' : ''));
+    const put2 = await fetch(GRAPH + ':/' + REMOTE_FILE + ':/content', { method: 'PUT', headers: { Authorization: 'Bearer ' + t, 'Content-Type': 'application/json' }, body: JSON.stringify({ app: 'ewaste-ledger', version: 1, savedAt: new Date().toISOString(), ...D }) });
+    if (!put2.ok) throw new Error('OneDrive refused the save (' + put2.status + ')');
+    META.lastSync = Date.now(); lsSet(META_KEY, JSON.stringify(META)); syncErr = ''; persist(true);
+    if (interactive) toast('Synced with OneDrive');
+  } catch (e) { syncErr = (e && e.message) || 'Sync failed'; if (interactive) toast(syncErr, true); }
+  finally { syncing = false; renderSync(); renderBanners(); }
+}
+function scheduleSync() { if (!syncReady()) return; clearTimeout(syncTimer); syncTimer = setTimeout(() => syncNow(false), 2500); }
+function renderSync() {
+  $('redirShow').textContent = redirectUri();
+  if (document.activeElement !== $('c-client')) $('c-client').value = CFG.clientId || ''; if (document.activeElement !== $('c-tenant')) $('c-tenant').value = CFG.tenant || ''; $('c-scope').value = CFG.scope || 'Files.ReadWrite.AppFolder';
+  const st = $('syncState'), conn = $('conn'), dirty = META.lastChange > (META.lastSync || 0);
+  $('signInBtn').hidden = !(msalApp && !account); $('syncBtn').hidden = !syncReady(); $('signOutBtn').hidden = !syncReady();
+  if (!CFG.clientId) { st.className = 'note'; st.textContent = 'Not set up. Records stay on this device only.'; conn.dataset.mode = 'local'; conn.textContent = 'On this device'; return; }
+  if (!window.msal) { st.className = 'note warn'; st.textContent = "The Microsoft sign-in library didn't load. Check the connection and reload."; return; }
+  if (!account) { st.className = 'note warn'; st.textContent = syncErr || 'Settings saved. Sign in to start syncing.'; conn.dataset.mode = 'dirty'; conn.textContent = 'Sign in to sync'; return; }
+  if (syncErr) { st.className = 'note crit'; st.textContent = syncErr; conn.dataset.mode = 'error'; conn.textContent = 'Sync problem'; return; }
+  st.className = 'note ok'; st.textContent = 'Signed in as ' + account.username + '. ' + (syncing ? 'Syncing…' : META.lastSync ? 'Last synced ' + new Date(META.lastSync).toLocaleString() + (dirty ? ' – changes waiting.' : '.') : 'Not synced yet.') + ' Data file: OneDrive → Apps → (app name) → ' + REMOTE_FILE;
+  conn.dataset.mode = dirty ? 'dirty' : 'synced'; conn.textContent = syncing ? 'Syncing…' : dirty ? 'Changes waiting' : 'OneDrive synced';
+}
+
+/* ---------- scanning ---------- */
+const SCAN_TITLES = { serial: 'Scan serial number', code: 'Scan model / part number', dserial: 'Scan drive serial', rapid: 'Rapid scan' };
+let reader = null, stream = null, loopTimer = 0, scanTarget = 'serial', liveErr = '', lastRead = '', liveToken = 0, actx = null, rapidBase = null, rapidCount = 0, lastFlash = '', lastFlashAt = 0;
+const work = document.createElement('canvas');
 function getReader() {
   if (reader || !window.ZXing) return reader;
   const Z = window.ZXing, F = Z.BarcodeFormat, hints = new Map();
   hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [F.CODE_128, F.CODE_39, F.CODE_93, F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.ITF, F.CODABAR, F.QR_CODE, F.DATA_MATRIX, F.PDF_417]);
-  hints.set(Z.DecodeHintType.TRY_HARDER, true);
-  reader = new Z.MultiFormatReader(); reader.setHints(hints); return reader;
+  hints.set(Z.DecodeHintType.TRY_HARDER, true); reader = new Z.MultiFormatReader(); reader.setHints(hints); return reader;
 }
-function decode(cv) {
-  const Z = window.ZXing, r = getReader(); if (!r) return null;
-  let src; try { src = new Z.HTMLCanvasElementLuminanceSource(cv); } catch (e) { return null; }
+function decodeCanvas(cv) {
+  const Z = window.ZXing, r = getReader(); if (!r) return null; let src; try { src = new Z.HTMLCanvasElementLuminanceSource(cv); } catch (e) { return null; }
   for (const Bin of [Z.HybridBinarizer, Z.GlobalHistogramBinarizer]) {
     /* decodeWithState keeps the hints; plain decode() would reset them */
-    try { const res = r.decodeWithState(new Z.BinaryBitmap(new Bin(src))); const t = res && res.getText(); if (t) return { v: norm(t), f: String(Z.BarcodeFormat[res.getBarcodeFormat()] || '').replace(/_/g, ' ') }; }
-    catch (e) { /* nothing in this frame */ }
+    try { const res = r.decodeWithState(new Z.BinaryBitmap(new Bin(src))); const t = res && res.getText(); if (t) return { text: t.trim(), format: String(Z.BarcodeFormat[res.getBarcodeFormat()] || '').replace(/_/g, ' ') }; } catch (e) { /* none in this pass */ }
   }
   return null;
 }
+function drawTo(source, sx, sy, sw, sh, maxDim) {
+  const k = Math.min(1, maxDim / Math.max(sw, sh)); work.width = Math.max(1, Math.round(sw * k)); work.height = Math.max(1, Math.round(sh * k));
+  work.getContext('2d', { willReadFrequently: true }).drawImage(source, sx, sy, sw, sh, 0, 0, work.width, work.height); return work;
+}
+function beep(freq) { try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); const o = actx.createOscillator(), g = actx.createGain(); o.frequency.value = freq || 1320; g.gain.value = 0.08; o.connect(g); g.connect(actx.destination); o.start(); o.stop(actx.currentTime + 0.09); } catch (e) { /* no audio */ } }
 function flash(text, dup) {
-  const l = $('last'); l.textContent = text; l.classList.toggle('dup', !!dup);
+  const m = $('scanMsg'); m.hidden = false; m.textContent = text; m.className = 'scan-msg big' + (dup ? ' dup' : '');
   const r = $('reticle'); r.classList.add('hit'); setTimeout(() => r.classList.remove('hit'), 260);
 }
-function accept(hit) {
-  if ($('optUpc').checked && /^(EAN|UPC)/.test(hit.f)) { flash('UPC ignored', true); return; }
-  if ($('optNum').checked && /^\d+$/.test(hit.v)) { flash('Digits-only ignored', true); return; }
-  const now = Date.now();
-  if (items.some(it => it.v === hit.v)) { if (hit.v !== lastAdded || now - lastAddedAt > 1500) { flash(hit.v + ' – already in list', true); } return; }
-  items.unshift(hit); persist(); render(); lastAdded = hit.v; lastAddedAt = now; beep(1320); flash(hit.v, false);
+function stopCamera() { clearInterval(loopTimer); loopTimer = 0; if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; } $('scanVideo').srcObject = null; $('torchBtn').hidden = true; }
+function photoMode(msg) {
+  liveToken++; stopCamera(); $('scanVideo').hidden = true; $('reticle').hidden = true; $('scanMsg').hidden = true; $('scanFallback').hidden = false;
+  $('fallbackMsg').textContent = msg || "The live camera isn't available here, so the ledger reads a photo instead. Fill the frame with one barcode, keep it level, avoid glare.";
+  $('liveErr').textContent = liveErr ? 'Camera response: ' + liveErr : '';
 }
-function tick() {
-  const v = $('video'); if (paused || document.hidden || v.readyState < 2 || !v.videoWidth) return;
-  const vw = v.videoWidth, vh = v.videoHeight, sw = vw * 0.9, sh = vh * 0.5, k = Math.min(1, 1280 / sw);
-  work.width = Math.round(sw * k); work.height = Math.round(sh * k);
-  work.getContext('2d', { willReadFrequently: true }).drawImage(v, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, work.width, work.height);
-  const hit = decode(work); if (!hit) return;
-  if (hit.v === lastRead) accept(hit); else lastRead = hit.v; /* two matching frames guard against misreads */
+function onHit(hit) {
+  const upc = /^(EAN|UPC)/i.test(hit.format), now = Date.now();
+  if (scanTarget === 'rapid') {
+    if (upc) { if (lastFlash !== hit.text || now - lastFlashAt > 1500) flash('UPC ignored', true); lastFlash = hit.text; lastFlashAt = now; return; }
+    const r = addFromBase(hit.text, rapidBase, 0), shown = splitSerial(hit.text, rapidBase).serial;
+    if (r === 'added') { rapidCount++; $('scanCount').textContent = rapidCount; beep(1320); flash(shown, false); persist(); }
+    else if (r === 'dup' && (lastFlash !== hit.text || now - lastFlashAt > 1500)) { beep(440); flash(shown + ' – already recorded', true); }
+    lastFlash = hit.text; lastFlashAt = now; return;
+  }
+  beep(1320); const target = scanTarget; closeScanner(); applyScan(target, hit);
 }
-function stop() { clearInterval(timer); timer = 0; if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; } $('video').srcObject = null; }
-async function start() {
-  if (!window.ZXing) { $('stageText').textContent = "The barcode library didn't load. Check the connection and reload."; return; }
-  if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { $('stageText').textContent = 'This page must be opened over HTTPS for the camera to work. Current address: ' + location.origin; return; }
-  $('stageText').textContent = 'Starting camera…'; $('startBtn').hidden = true;
+async function startLive() {
+  const token = ++liveToken; const m = $('scanMsg');
+  $('scanVideo').hidden = false; $('reticle').hidden = false; $('scanFallback').hidden = true; m.hidden = false; m.className = 'scan-msg'; m.textContent = 'Starting camera…';
+  if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { liveErr = 'camera needs HTTPS (' + location.origin + ')'; photoMode(); return; }
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } });
-    const v = $('video'); v.srcObject = stream; await v.play().catch(() => {});
-    $('stageMsg').hidden = true; $('pauseBtn').hidden = false; paused = false; $('pauseBtn').textContent = 'Pause';
-    const track = stream.getVideoTracks()[0]; const caps = track && track.getCapabilities ? track.getCapabilities() : {};
-    $('torchBtn').hidden = !caps.torch;
-    clearInterval(timer); timer = setInterval(tick, 160);
+    const s = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } });
+    if (token !== liveToken || $('scanner').hidden) { s.getTracks().forEach(t => t.stop()); return; }
+    stream = s; const v = $('scanVideo'); v.srcObject = s; await v.play().catch(() => {});
+    m.textContent = scanTarget === 'rapid' ? 'Sweep across the serial-number barcodes' : 'Line up one barcode inside the frame';
+    const track = s.getVideoTracks()[0], caps = track && track.getCapabilities ? track.getCapabilities() : {}; $('torchBtn').hidden = !caps.torch; $('torchBtn').dataset.on = '0';
+    clearInterval(loopTimer);
+    loopTimer = setInterval(() => {
+      if (document.hidden || v.readyState < 2 || !v.videoWidth) return;
+      const vw = v.videoWidth, vh = v.videoHeight, sw = vw * 0.9, sh = vh * 0.5;
+      const hit = decodeCanvas(drawTo(v, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 1280)); if (!hit) return;
+      if (hit.text === lastRead) onHit(hit); else lastRead = hit.text; /* two matching frames guard against misreads */
+    }, 160);
   } catch (e) {
-    $('stageMsg').hidden = false; $('startBtn').hidden = false; $('startBtn').textContent = 'Try again';
-    $('stageText').textContent = (e && e.name === 'NotAllowedError')
-      ? 'Camera access was refused. In iOS Settings → Safari → Camera choose Allow (or Ask), then try again.'
-      : 'Could not start the camera (' + ((e && e.name) || 'unknown') + ').';
+    if (token !== liveToken) return; liveErr = (e && e.name) || 'unknown error';
+    photoMode(liveErr === 'NotAllowedError' ? 'Camera access was refused. In iOS Settings → Safari → Camera choose Allow or Ask, then try the live camera again – or take a photo of the barcode.' : '');
   }
 }
-async function copyAll() {
-  if (!items.length) { toast('Nothing to copy yet'); return; }
-  const text = items.slice().reverse().map(it => it.v).join('\n');
-  try { await navigator.clipboard.writeText(text); toast('Copied ' + items.length + ' – paste into the Ledger'); }
-  catch (e) {
-    const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select();
-    let ok = false; try { ok = document.execCommand('copy'); } catch (err) { ok = false; } ta.remove();
-    toast(ok ? 'Copied ' + items.length + ' – paste into the Ledger' : 'Copy was blocked – use Share instead');
+function openScanner(target) {
+  if (!window.ZXing) { toast("The barcode reader didn't load – check the connection and reload. You can still type the number.", true); return; }
+  scanTarget = target; lastRead = ''; lastFlash = ''; $('scanTitle').textContent = SCAN_TITLES[target]; $('scanner').hidden = false;
+  const rapid = target === 'rapid'; $('scanCount').hidden = !rapid; $('scanInfo').hidden = !rapid; $('photoBtn').hidden = rapid; $('scanClose').textContent = rapid ? 'Done' : 'Close';
+  if (rapid) {
+    rapidBase = readForm(); rapidCount = 0; $('scanCount').textContent = '0'; learnCode(rapidBase);
+    $('scanInfo').textContent = 'Saving as: ' + ([rapidBase.manufacturer, rapidBase.model].filter(Boolean).join(' ') || 'no make / model') + ' · ' + rapidBase.type + ' · ' + (rapidBase.dataBearing ? (rapidBase.sanMethod ? METHOD_LABEL[rapidBase.sanMethod] : 'wipe NOT recorded') : 'no storage') + ' → ' + batchName(rapidBase.batchId);
   }
+  startLive();
+}
+function closeScanner() {
+  liveToken++; stopCamera(); $('scanner').hidden = true;
+  if (scanTarget === 'rapid' && rapidCount) { toast('Rapid scan saved ' + rapidCount + ' device' + (rapidCount === 1 ? '' : 's')); rapidCount = 0; }
+}
+async function loadBitmap(file) {
+  if (window.createImageBitmap) { try { return await createImageBitmap(file); } catch (e) { /* fall through */ } }
+  return new Promise((res, rej) => { const fr = new FileReader(); fr.onerror = () => rej(new Error('read')); fr.onload = () => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('decode')); im.src = fr.result; }; fr.readAsDataURL(file); });
+}
+async function onPhoto(file) {
+  if (!file) return; $('scanner').hidden = false; photoMode('Reading the photo…'); $('liveErr').textContent = '';
+  let hit = null;
+  try {
+    const bmp = await loadBitmap(file), w = bmp.width || bmp.naturalWidth, h = bmp.height || bmp.naturalHeight;
+    const crops = [[0, 0, 1, 1], [0.15, 0.15, 0.7, 0.7], [0, 0.25, 1, 0.5], [0.25, 0, 0.5, 1]];
+    outer: for (const dim of [1600, 1000, 2400]) for (const c of crops) { hit = decodeCanvas(drawTo(bmp, w * c[0], h * c[1], w * c[2], h * c[3], dim)); if (hit) break outer; await new Promise(r => setTimeout(r, 0)); }
+  } catch (e) { hit = null; }
+  if ($('scanner').hidden) return;
+  if (hit) onHit(hit); else photoMode('No barcode found in that photo. Move closer so one barcode fills most of the frame, keep it level and avoid glare, then take another.');
+}
+function applyScan(target, hit) {
+  const text = hit.text, upc = /^(EAN|UPC)/i.test(hit.format); toast('Scanned ' + normSerial(text));
+  if (target === 'serial') {
+    if (upc) { $('f-code').value = normSerial(text); if (!lookupCode(true)) toast("That's a UPC product code, not a serial – saved as the model code instead.", true); return; }
+    const s = splitSerial(text, { manufacturer: $('f-mfr').value.trim(), modelCode: normSerial($('f-code').value) });
+    $('f-serial').value = s.serial; $('f-code').value = s.modelCode || ''; if (s.manufacturer) $('f-mfr').value = s.manufacturer; $('dupNote').hidden = true; dupOk = '';
+    if (/^[A-Z0-9]{7}$/i.test(s.serial) && !$('f-mfr').value) { $('f-mfr').value = 'Dell'; toast('7-character tag – assumed Dell. Change it if wrong.'); }
+    const dup = findDup(s.serial, S.editId); if (dup) toast(s.serial + ' is already recorded in ' + batchName(dup.batchId), true);
+  } else if (target === 'code') { $('f-code').value = normSerial(text); lookupCode(true); }
+  else $('f-dserial').value = normSerial(text);
 }
 
-$('startBtn').addEventListener('click', start);
-$('copyBtn').addEventListener('click', copyAll);
-$('pauseBtn').addEventListener('click', () => { paused = !paused; $('pauseBtn').textContent = paused ? 'Resume' : 'Pause'; });
-$('torchBtn').addEventListener('click', async () => {
-  const track = stream && stream.getVideoTracks()[0]; if (!track) return;
-  const on = $('torchBtn').dataset.on === '1';
-  try { await track.applyConstraints({ advanced: [{ torch: !on }] }); $('torchBtn').dataset.on = on ? '0' : '1'; } catch (e) { toast('Light not available on this camera'); }
+/* ---------- wiring ---------- */
+$('f-type').innerHTML = TYPES.map(t => '<option>' + esc(t[0]) + '</option>').join('');
+$('f-method').innerHTML = METHODS.map(m => '<option value="' + m[0] + '">' + esc(m[1]) + '</option>').join('');
+$('f-keep').checked = lsGet('ewl-keep') !== '0';
+resetForm(false);
+$('devForm').addEventListener('submit', e => { e.preventDefault(); saveDevice(); });
+$('batchForm').addEventListener('submit', e => { e.preventDefault(); saveBatch(); });
+$('f-type').addEventListener('change', onTypeChange);
+$('f-db-y').addEventListener('change', () => setDataBearing(true));
+$('f-db-n').addEventListener('change', () => setDataBearing(false));
+$('f-code').addEventListener('change', () => lookupCode(false));
+$('f-serial').addEventListener('input', () => { $('dupNote').hidden = true; });
+$('f-keep').addEventListener('change', e => lsSet('ewl-keep', e.target.checked ? '1' : '0'));
+$('f-batch').addEventListener('change', e => { if (!S.editId) useBatch(e.target.value); });
+$('rapidBtn').addEventListener('click', () => openScanner('rapid'));
+$('bulkBtn').addEventListener('click', bulkAdd);
+$('cancelEdit').addEventListener('click', endEdit);
+$('delBtn').addEventListener('click', () => {
+  if (!delArmed) { $('delBtn').textContent = 'Tap again to delete'; delArmed = setTimeout(resetDelBtn, 3500); return; }
+  tomb('devices', S.editId); toast('Deleted'); endEdit(); persist();
 });
-$('clearBtn').addEventListener('click', () => {
-  if (!items.length) return;
-  if (!clearArmed) { $('clearBtn').textContent = 'Tap again to clear ' + items.length; clearArmed = setTimeout(() => { clearArmed = 0; $('clearBtn').textContent = 'Clear'; }, 3500); return; }
-  clearTimeout(clearArmed); clearArmed = 0; $('clearBtn').textContent = 'Clear'; items = []; persist(); render(); $('last').textContent = '';
+$('batchCancel').addEventListener('click', endBatchEdit);
+$('batchDel').addEventListener('click', () => {
+  const id = S.batchEditId; if (!id) return; const n = devices().filter(d => d.batchId === id).length;
+  if (n) { toast('This batch still holds ' + n + ' device' + (n === 1 ? '' : 's') + '. Move or delete them first.', true); return; }
+  if ($('batchDel').textContent !== 'Tap again to delete') { $('batchDel').textContent = 'Tap again to delete'; setTimeout(() => { $('batchDel').textContent = 'Delete batch'; }, 3500); return; }
+  tomb('batches', id); if (S.batchId === id) { S.batchId = ''; lsSet('ewl-batch', ''); } toast('Batch deleted'); endBatchEdit(); persist();
 });
-$('list').addEventListener('click', e => { const b = e.target.closest('[data-del]'); if (!b) return; items.splice(Number(b.dataset.del), 1); persist(); render(); });
-if (navigator.share) {
-  $('shareBtn').hidden = false;
-  $('shareBtn').addEventListener('click', () => { if (items.length) navigator.share({ text: items.slice().reverse().map(it => it.v).join('\n') }).catch(() => {}); });
-}
-/* iOS suspends the camera when the page is hidden; release it and restart cleanly on return */
+$('s-org').addEventListener('change', e => { D.settings = { orgName: e.target.value.trim(), updatedAt: Date.now() }; persist(); toast('Saved'); });
+$('exportAll').addEventListener('click', () => exportCsv(null));
+$('backupBtn').addEventListener('click', backupNow);
+$('restoreInput').addEventListener('change', e => { const f = e.target.files && e.target.files[0]; e.target.value = ''; restoreFrom(f); });
+$('q').addEventListener('input', e => { S.q = e.target.value; renderDevices(); });
+$('conn').addEventListener('click', () => showView('setup'));
+$('cfgSave').addEventListener('click', async () => {
+  CFG = { clientId: $('c-client').value.trim(), tenant: $('c-tenant').value.trim(), scope: $('c-scope').value }; lsSet(CFG_KEY, JSON.stringify(CFG)); syncErr = '';
+  await initMsal(); renderSync(); toast(CFG.clientId ? 'Saved – now sign in' : 'Sync settings cleared');
+});
+$('signInBtn').addEventListener('click', () => { if (msalApp) msalApp.loginRedirect({ scopes: [CFG.scope] }).catch(e => { syncErr = 'Sign-in failed: ' + ((e && (e.errorCode || e.message)) || 'unknown'); renderSync(); }); });
+$('syncBtn').addEventListener('click', () => syncNow(true));
+$('signOutBtn').addEventListener('click', () => { try { Object.keys(localStorage).filter(k => k.includes('login.windows.net') || k.includes('msal.')).forEach(k => localStorage.removeItem(k)); } catch (e) { /* ignore */ } account = null; syncErr = ''; renderSync(); toast('Disconnected. Records on this device are untouched.'); });
+$('torchBtn').addEventListener('click', async () => { const tr = stream && stream.getVideoTracks()[0]; if (!tr) return; const on = $('torchBtn').dataset.on === '1'; try { await tr.applyConstraints({ advanced: [{ torch: !on }] }); $('torchBtn').dataset.on = on ? '0' : '1'; } catch (e) { toast('Light not available on this camera'); } });
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-scan],[data-view],[data-edit],[data-filter],[data-xlsx],[data-csv],[data-bedit],[data-buse],[data-go-backup],#dupSave'); if (!el) return;
+  if (el.dataset.scan) openScanner(el.dataset.scan);
+  else if (el.dataset.view) showView(el.dataset.view);
+  else if (el.dataset.edit) startEdit(el.dataset.edit);
+  else if (el.dataset.filter) { S.filter = el.dataset.filter; renderDevices(); }
+  else if (el.dataset.xlsx) exportXlsx(el.dataset.xlsx);
+  else if (el.dataset.csv) exportCsv(el.dataset.csv);
+  else if (el.dataset.goBackup) showView('setup');
+  else if (el.dataset.buse) { if (S.editId) endEdit(); useBatch(el.dataset.buse); showView('add'); }
+  else if (el.dataset.bedit) { const b = batches().find(x => x.id === el.dataset.bedit); if (!b) return; S.batchEditId = b.id; fillBatchForm(b); $('batchFormTitle').textContent = 'Edit batch'; $('batchCancel').hidden = false; $('batchDel').hidden = false; $('batchSave').textContent = 'Save batch'; $('batchForm').scrollIntoView({ block: 'start' }); }
+  else if (el.id === 'dupSave') { dupOk = normSerial($('f-serial').value); $('dupNote').hidden = true; saveDevice(); }
+});
+$('scanClose').addEventListener('click', closeScanner);
+$('retryLive').addEventListener('click', () => { liveErr = ''; startLive(); });
+$('photoInput').addEventListener('change', e => { const f = e.target.files && e.target.files[0]; e.target.value = ''; onPhoto(f); });
+[['photoBtn', 'photoInput'], ['restoreBtn', 'restoreInput']].forEach(([b, i]) => $(b).addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $(i).click(); } }));
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('scanner').hidden) closeScanner(); });
+/* iOS suspends the camera when the page is hidden: release it, keep the scanner open, restart on return */
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { if (stream) { stop(); $('stageMsg').hidden = false; $('startBtn').hidden = false; $('startBtn').textContent = 'Resume camera'; $('stageText').textContent = 'Camera paused while the page was in the background.'; } }
+  if (document.hidden) { if (!$('scanner').hidden) { liveToken++; stopCamera(); } return; }
+  if (!$('scanner').hidden && $('scanFallback').hidden && !stream) startLive();
+  if (syncReady()) syncNow(false);
 });
-render();
+
+renderAll();
+initMsal().then(() => { renderSync(); if (syncReady()) syncNow(false); });
 })();
 </script>
 </body>
