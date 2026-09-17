@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Tag Scanner">
+<meta name="robots" content="noindex,nofollow">
+<title>E-Waste Tag Scanner</title>
+<!--
+  Live barcode scanner companion for the E-Waste Ledger (Claude artifact).
+  Why it exists: claude.ai frames artifacts without camera delegation, so getUserMedia returns NotAllowedError
+  there (confirmed 2026-09-17 in both the Claude iOS app and Safari). Served top-level over HTTPS, this page
+  gets the camera. It holds no data server-side: scanned serials stay in this phone's localStorage until
+  copied into the Ledger's "Add many serials at once" box.
+  Requirements: must be served over HTTPS (or localhost) - iOS refuses the camera on plain HTTP.
+-->
+<style>
+:root{--bg:#0A0C0B;--panel:#151B18;--line:#2F3933;--ink:#F2F5F3;--muted:#9AA59E;--accent:#4FBFA3;--accent-ink:#06231C;--amber:#E5B550;--crit:#EE8A80;
+  --sans:system-ui,-apple-system,"Segoe UI",sans-serif;--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:16px;line-height:1.4;display:flex;flex-direction:column;
+  padding:env(safe-area-inset-top,0) env(safe-area-inset-right,0) env(safe-area-inset-bottom,0) env(safe-area-inset-left,0)}
+[hidden]{display:none!important}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 16px}
+h1{font-size:1rem;margin:0;letter-spacing:.08em;text-transform:uppercase;font-weight:700}
+.count{font-family:var(--mono);font-size:1.5rem;font-weight:600;color:var(--accent)}
+.count small{font-family:var(--sans);font-size:.7rem;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-left:6px}
+.stage{position:relative;flex:0 0 38vh;min-height:220px;background:#000;overflow:hidden}
+.stage video{width:100%;height:100%;object-fit:cover}
+.reticle{position:absolute;left:5%;right:5%;top:50%;height:42%;transform:translateY(-50%);border:2px solid var(--accent);border-radius:8px;box-shadow:0 0 0 100vmax rgba(0,0,0,.45);pointer-events:none}
+.reticle::after{content:"";position:absolute;left:5%;right:5%;top:50%;height:2px;background:var(--amber)}
+.reticle.hit{border-color:var(--amber);background:rgba(229,181,80,.18)}
+.stage-msg{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:20px;text-align:center;background:#000}
+.stage-msg p{margin:0;color:#C9D1CC;max-width:36ch}
+.last{position:absolute;left:12px;right:12px;bottom:10px;text-align:center;font-family:var(--mono);font-weight:600;font-size:1.05rem;text-shadow:0 1px 4px #000;overflow-wrap:anywhere}
+.last.dup{color:var(--amber)}
+.bar{display:flex;flex-wrap:wrap;gap:8px;padding:10px 16px;border-bottom:1px solid var(--line)}
+.btn{font:inherit;font-weight:600;font-size:.92rem;min-height:44px;padding:0 14px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer;flex:1 1 auto;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.danger{color:var(--crit)}
+.btn:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+.opts{display:flex;flex-wrap:wrap;gap:6px 18px;padding:8px 16px;font-size:.85rem;color:var(--muted)}
+.opts label{display:flex;gap:8px;align-items:center}
+.opts input{width:20px;height:20px;accent-color:var(--accent)}
+.list{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch}
+.item{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;padding:9px 16px;border-bottom:1px solid var(--line)}
+.item .n{font-family:var(--mono);font-size:.8rem;color:var(--muted);min-width:2.5ch;text-align:right}
+.item .v{font-family:var(--mono);font-weight:600;overflow-wrap:anywhere}
+.item .f{display:block;font-family:var(--sans);font-weight:400;font-size:.72rem;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+.item button{font:inherit;min-width:44px;min-height:40px;border-radius:6px;border:1px solid var(--line);background:transparent;color:var(--muted);cursor:pointer}
+.empty{padding:22px 16px;color:var(--muted);font-size:.92rem;margin:0}
+.toast{position:fixed;left:16px;right:16px;bottom:calc(16px + env(safe-area-inset-bottom,0));margin:0 auto;max-width:480px;background:var(--ink);color:#0A0C0B;padding:12px 14px;border-radius:6px;font-weight:600;font-size:.92rem;text-align:center;z-index:10}
+</style>
+</head>
+<body>
+<header>
+  <h1>Tag Scanner</h1>
+  <span class="count"><span id="count">0</span><small>scanned</small></span>
+</header>
+
+<div class="stage">
+  <video id="video" playsinline muted autoplay></video>
+  <div class="reticle" id="reticle"></div>
+  <div class="last" id="last"></div>
+  <div class="stage-msg" id="stageMsg">
+    <p id="stageText">Point the camera at a serial-number barcode. Each new tag beeps and drops into the list – no tapping between devices.</p>
+    <button type="button" class="btn primary" id="startBtn" style="flex:none;min-width:200px">Start camera</button>
+  </div>
+</div>
+
+<div class="bar">
+  <button type="button" class="btn primary" id="copyBtn">Copy all</button>
+  <button type="button" class="btn" id="shareBtn" hidden>Share</button>
+  <button type="button" class="btn" id="torchBtn" hidden>Light</button>
+  <button type="button" class="btn" id="pauseBtn" hidden>Pause</button>
+  <button type="button" class="btn danger" id="clearBtn">Clear</button>
+</div>
+<div class="opts">
+  <label for="optUpc"><input type="checkbox" id="optUpc" checked>Ignore UPC / EAN product codes</label>
+  <label for="optNum"><input type="checkbox" id="optNum">Ignore all-digit codes (Dell express service code)</label>
+</div>
+
+<div class="list" id="list" aria-live="polite"></div>
+<div class="bar" style="border-top:1px solid var(--line);border-bottom:0">
+  <a class="btn" id="ledgerLink" href="https://claude.ai/artifact/1Tkqrcy4BiG5isPhpBuHaT" target="_blank" rel="noopener">Open the E-Waste Ledger to paste</a>
+</div>
+<p class="toast" id="toast" role="status" hidden></p>
+
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script>
+(() => {
+'use strict';
+const KEY = 'ewaste-tagscanner-v1';
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const norm = s => String(s || '').toUpperCase().replace(/\s+/g, '').trim();
+const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* storage blocked */ } };
+
+let items = []; try { items = JSON.parse(lsGet(KEY) || '[]') || []; } catch (e) { items = []; }
+let stream = null, timer = 0, reader = null, lastRead = '', lastAdded = '', lastAddedAt = 0, paused = false, actx = null, toastTimer = 0, clearArmed = 0;
+const work = document.createElement('canvas');
+
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 2600); }
+function persist() { lsSet(KEY, JSON.stringify(items)); }
+function render() {
+  $('count').textContent = items.length;
+  $('list').innerHTML = items.length
+    ? items.map((it, i) => '<div class="item"><span class="n">' + (items.length - i) + '</span><span class="v">' + esc(it.v) + '<span class="f">' + esc(it.f) + '</span></span><button type="button" data-del="' + i + '" aria-label="Remove ' + esc(it.v) + '">✕</button></div>').join('')
+    : '<p class="empty">Nothing scanned yet. When you are done, tap Copy all, open the Ledger, and paste into "Add many serials at once".</p>';
+}
+function beep(freq) {
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = actx.createOscillator(), g = actx.createGain(); o.frequency.value = freq; g.gain.value = 0.08;
+    o.connect(g); g.connect(actx.destination); o.start(); o.stop(actx.currentTime + 0.09);
+  } catch (e) { /* no audio */ }
+}
+function getReader() {
+  if (reader || !window.ZXing) return reader;
+  const Z = window.ZXing, F = Z.BarcodeFormat, hints = new Map();
+  hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [F.CODE_128, F.CODE_39, F.CODE_93, F.EAN_13, F.EAN_8, F.UPC_A, F.UPC_E, F.ITF, F.CODABAR, F.QR_CODE, F.DATA_MATRIX, F.PDF_417]);
+  hints.set(Z.DecodeHintType.TRY_HARDER, true);
+  reader = new Z.MultiFormatReader(); reader.setHints(hints); return reader;
+}
+function decode(cv) {
+  const Z = window.ZXing, r = getReader(); if (!r) return null;
+  let src; try { src = new Z.HTMLCanvasElementLuminanceSource(cv); } catch (e) { return null; }
+  for (const Bin of [Z.HybridBinarizer, Z.GlobalHistogramBinarizer]) {
+    /* decodeWithState keeps the hints; plain decode() would reset them */
+    try { const res = r.decodeWithState(new Z.BinaryBitmap(new Bin(src))); const t = res && res.getText(); if (t) return { v: norm(t), f: String(Z.BarcodeFormat[res.getBarcodeFormat()] || '').replace(/_/g, ' ') }; }
+    catch (e) { /* nothing in this frame */ }
+  }
+  return null;
+}
+function flash(text, dup) {
+  const l = $('last'); l.textContent = text; l.classList.toggle('dup', !!dup);
+  const r = $('reticle'); r.classList.add('hit'); setTimeout(() => r.classList.remove('hit'), 260);
+}
+function accept(hit) {
+  if ($('optUpc').checked && /^(EAN|UPC)/.test(hit.f)) { flash('UPC ignored', true); return; }
+  if ($('optNum').checked && /^\d+$/.test(hit.v)) { flash('Digits-only ignored', true); return; }
+  const now = Date.now();
+  if (items.some(it => it.v === hit.v)) { if (hit.v !== lastAdded || now - lastAddedAt > 1500) { flash(hit.v + ' – already in list', true); } return; }
+  items.unshift(hit); persist(); render(); lastAdded = hit.v; lastAddedAt = now; beep(1320); flash(hit.v, false);
+}
+function tick() {
+  const v = $('video'); if (paused || document.hidden || v.readyState < 2 || !v.videoWidth) return;
+  const vw = v.videoWidth, vh = v.videoHeight, sw = vw * 0.9, sh = vh * 0.5, k = Math.min(1, 1280 / sw);
+  work.width = Math.round(sw * k); work.height = Math.round(sh * k);
+  work.getContext('2d', { willReadFrequently: true }).drawImage(v, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, work.width, work.height);
+  const hit = decode(work); if (!hit) return;
+  if (hit.v === lastRead) accept(hit); else lastRead = hit.v; /* two matching frames guard against misreads */
+}
+function stop() { clearInterval(timer); timer = 0; if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; } $('video').srcObject = null; }
+async function start() {
+  if (!window.ZXing) { $('stageText').textContent = "The barcode library didn't load. Check the connection and reload."; return; }
+  if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { $('stageText').textContent = 'This page must be opened over HTTPS for the camera to work. Current address: ' + location.origin; return; }
+  $('stageText').textContent = 'Starting camera…'; $('startBtn').hidden = true;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } } });
+    const v = $('video'); v.srcObject = stream; await v.play().catch(() => {});
+    $('stageMsg').hidden = true; $('pauseBtn').hidden = false; paused = false; $('pauseBtn').textContent = 'Pause';
+    const track = stream.getVideoTracks()[0]; const caps = track && track.getCapabilities ? track.getCapabilities() : {};
+    $('torchBtn').hidden = !caps.torch;
+    clearInterval(timer); timer = setInterval(tick, 160);
+  } catch (e) {
+    $('stageMsg').hidden = false; $('startBtn').hidden = false; $('startBtn').textContent = 'Try again';
+    $('stageText').textContent = (e && e.name === 'NotAllowedError')
+      ? 'Camera access was refused. In iOS Settings → Safari → Camera choose Allow (or Ask), then try again.'
+      : 'Could not start the camera (' + ((e && e.name) || 'unknown') + ').';
+  }
+}
+async function copyAll() {
+  if (!items.length) { toast('Nothing to copy yet'); return; }
+  const text = items.slice().reverse().map(it => it.v).join('\n');
+  try { await navigator.clipboard.writeText(text); toast('Copied ' + items.length + ' – paste into the Ledger'); }
+  catch (e) {
+    const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select();
+    let ok = false; try { ok = document.execCommand('copy'); } catch (err) { ok = false; } ta.remove();
+    toast(ok ? 'Copied ' + items.length + ' – paste into the Ledger' : 'Copy was blocked – use Share instead');
+  }
+}
+
+$('startBtn').addEventListener('click', start);
+$('copyBtn').addEventListener('click', copyAll);
+$('pauseBtn').addEventListener('click', () => { paused = !paused; $('pauseBtn').textContent = paused ? 'Resume' : 'Pause'; });
+$('torchBtn').addEventListener('click', async () => {
+  const track = stream && stream.getVideoTracks()[0]; if (!track) return;
+  const on = $('torchBtn').dataset.on === '1';
+  try { await track.applyConstraints({ advanced: [{ torch: !on }] }); $('torchBtn').dataset.on = on ? '0' : '1'; } catch (e) { toast('Light not available on this camera'); }
+});
+$('clearBtn').addEventListener('click', () => {
+  if (!items.length) return;
+  if (!clearArmed) { $('clearBtn').textContent = 'Tap again to clear ' + items.length; clearArmed = setTimeout(() => { clearArmed = 0; $('clearBtn').textContent = 'Clear'; }, 3500); return; }
+  clearTimeout(clearArmed); clearArmed = 0; $('clearBtn').textContent = 'Clear'; items = []; persist(); render(); $('last').textContent = '';
+});
+$('list').addEventListener('click', e => { const b = e.target.closest('[data-del]'); if (!b) return; items.splice(Number(b.dataset.del), 1); persist(); render(); });
+if (navigator.share) {
+  $('shareBtn').hidden = false;
+  $('shareBtn').addEventListener('click', () => { if (items.length) navigator.share({ text: items.slice().reverse().map(it => it.v).join('\n') }).catch(() => {}); });
+}
+/* iOS suspends the camera when the page is hidden; release it and restart cleanly on return */
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { if (stream) { stop(); $('stageMsg').hidden = false; $('startBtn').hidden = false; $('startBtn').textContent = 'Resume camera'; $('stageText').textContent = 'Camera paused while the page was in the background.'; } }
+});
+render();
+})();
+</script>
+</body>
+</html>
